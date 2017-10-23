@@ -1,0 +1,90 @@
+
+namespace gproc
+{
+  void resizeAndMerge(float* target_ptr, const float* const source_ptr,
+                      const int target_width, const int target_height,
+                      const int source_width, const int source_height, const int channels);
+
+  __global__ void resizeKernel(float* target_ptr, const float* const source_ptr,
+                               const int target_width, const int target_height,
+                               const int source_width, const int source_height);
+
+  void findPeaks(float* target_ptr, int* marking_ptr, const float* const source_ptr,
+                 const int source_width, const int source_height, const int channels,
+                 const int max_peaks, const float threshold);
+
+  __global__ void markPeaks(int* marking_ptr, const float* const source_ptr,
+                            const int width, const int height, const float threshold);
+
+  __global__ void writePeaks(float* target_ptr, const int* const marking_ptr,
+                             const float* const source_ptr, int* target_count,
+                             const int length, const int width, const int height,
+                             const int max_peaks);
+
+  inline unsigned int get_num_blocks(const unsigned int total,
+                                     const unsigned int threads_per_block)
+  {
+    return (total + threads_per_block - 1)/threads_per_block;
+  }
+
+  inline __device__ int fastMax(int a, int b)
+  {
+    return (a > b ? a : b); 
+  }
+
+  inline __device__ int fastMin(int a, int b)
+  {
+    return (a < b ? a : b); 
+  }
+
+  inline __device__ int fastTruncate(int value, int min, int max)
+  {
+    return fastMin(max, fastMax(min, value));
+  }
+
+  inline __device__ void sequential_data(int* dest_array, float& dx,
+                                         const float position, const int dimension)
+  {
+    //Finds neighboring sample points
+    dest_array[1] = fastTruncate(int(position + 1e-5), 0, dimension - 1); 
+    dest_array[0] = fastMax(0, dest_array[1] - 1); 
+    dest_array[2] = fastMin(dimension - 1, dest_array[1] + 1); 
+    dest_array[3] = fastMin(dimension - 1, dest_array[2] + 1); 
+    dx = position - dest_array[1];
+  }
+
+  inline __device__ float cubicInterpolate(const float v0, const float v1, 
+                                           const float v2, const float v3, const float dx) 
+  {
+    //Plug and chug cubic interpolation
+    return (-0.5f * v0 + 1.5f * v1 - 1.5f * v2 + 0.5f * v3) * dx * dx * dx
+            + (v0 - 2.5f * v1 + 2.f * v2 - 0.5f * v3) * dx * dx
+            - 0.5f * (v0 - v2) * dx // + (-0.5f * v0 + 0.5f * v2) * dx
+            + v1; 
+  }
+
+  inline __device__ float bicubicInterpolate(const float* const source_ptr,
+    const float x_source, const float y_source, const int source_width,
+    const int source_height)
+  {
+    //Cubic interpolates in one dimension to get values in a line parallel to the other
+    //dimension, then interpolates along that line
+    int x_array[4];
+    int y_array[4];
+    float dx;
+    float dy;
+    sequential_data(x_array, dx, x_source, source_width);
+    sequential_data(y_array, dy, y_source, source_height);
+
+    float temp[4];
+    for(unsigned char i = 0; i < 4; i++)
+    {
+      const int offset = y_array[i]*source_width;
+      temp[i] = cubicInterpolate(source_ptr[offset + x_array[0]],
+                                 source_ptr[offset + x_array[1]],
+                                 source_ptr[offset + x_array[2]],
+                                 source_ptr[offset + x_array[3]], dx);
+    }
+    return cubicInterpolate(temp[0], temp[1], temp[2], temp[3], dy);
+  }
+}
